@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>핀볼</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #0f1115);
+    --text: var(--tg-theme-text-color, #f2f3f5);
+    --hint: var(--tg-theme-hint-color, #8b8f98);
+    --card: var(--tg-theme-secondary-bg-color, #1a1d24);
+    --accent: var(--tg-theme-button-color, #2f80ed);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; padding: 10px 12px; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  .hud {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    width: 100%; max-width: 520px; background: var(--card); border-radius: 12px; padding: 8px 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  .score { font-size: 22px; font-weight: 800; }
+  .meta { font-size: 13px; color: var(--hint); text-align: right; line-height: 1.35; }
+  .meta b { color: var(--text); }
+  .wrap { flex: 1; width: 100%; min-height: 0; display: flex; justify-content: center; align-items: center; }
+  canvas { display: block; touch-action: none; border-radius: 14px; }
+  .controls { display: flex; gap: 8px; width: 100%; max-width: 520px; }
+  .launch {
+    flex: 1; border: 0; border-radius: 12px; padding: 12px; font: inherit; font-size: 15px; font-weight: 600;
+    background: var(--accent); color: var(--accent-text); cursor: pointer; touch-action: none; position: relative; overflow: hidden;
+  }
+  .launch .charge { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255,255,255,.25); }
+  .launch span { position: relative; }
+  .tip { font-size: 12px; color: var(--hint); }
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+    align-items: center; justify-content: center; padding: 16px; z-index: 10;
+  }
+  .overlay.show { display: flex; }
+  .dialog { background: var(--card); border-radius: 18px; padding: 24px; text-align: center; width: min(320px, 100%); }
+  .dialog h2 { margin: 0 0 8px; font-size: 24px; }
+  .dialog p { margin: 0 0 18px; color: var(--hint); }
+  .dialog button {
+    border: 0; border-radius: 12px; padding: 12px 20px; width: 100%; font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--accent); color: var(--accent-text);
+  }
+</style>
+</head>
+<body>
+  <div class="hud">
+    <div class="score" id="score">0</div>
+    <div class="meta">
+      <div>배율 <b id="mult">×1</b> · 공 <b id="balls">●●●</b></div>
+      <div id="best">최고 0</div>
+    </div>
+  </div>
+
+  <div class="wrap" id="wrap"><canvas id="cv"></canvas></div>
+
+  <div class="controls">
+    <button class="launch" id="launch"><div class="charge" id="charge"></div><span>🚀 길게 눌러 충전 → 놓으면 발사</span></button>
+  </div>
+  <div class="tip">화면 왼쪽/오른쪽 터치 = 플리퍼 · PC: Z / ← , / / → , 스페이스 = 발사</div>
+
+  <div class="overlay" id="overlay">
+    <div class="dialog">
+      <h2 id="resultTitle"></h2>
+      <p id="resultText"></p>
+      <button id="again">다시 하기</button>
+    </div>
+  </div>
+
+<script>
+  const tg = window.Telegram?.WebApp;
+  tg?.ready();
+  tg?.expand();
+  tg?.disableVerticalSwipes?.();
+  if (tg?.BackButton) {
+    tg.BackButton.show();
+    tg.BackButton.onClick(() => { location.href = '../index.html'; });
+  }
+  const haptic = {
+    tap:  () => tg?.HapticFeedback?.impactOccurred('light'),
+    hit:  () => tg?.HapticFeedback?.impactOccurred('medium'),
+    big:  () => tg?.HapticFeedback?.impactOccurred('heavy'),
+    win:  () => tg?.HapticFeedback?.notificationOccurred('success'),
+    lose: () => tg?.HapticFeedback?.notificationOccurred('error'),
+  };
+
+  // 텔레그램 안에서는 CloudStorage(기기 간 동기화), 밖에서는 localStorage
+  const useCloud = !!(tg?.initData && tg.isVersionAtLeast?.('6.9'));
+  const store = {
+    get(key) {
+      return new Promise(res => {
+        try {
+          if (useCloud) tg.CloudStorage.getItem(key, (err, v) => res(err ? null : v || null));
+          else res(localStorage.getItem(key));
+        } catch { res(null); }
+      });
+    },
+    set(key, value) {
+      try {
+        if (useCloud) tg.CloudStorage.setItem(key, String(value));
+        else localStorage.setItem(key, String(value));
+      } catch {}
+    },
+  };
+
+  const $ = id => document.getElementById(id);
+  const cv = $('cv'), ctx = cv.getContext('2d');
+
+  // ───────── 테이블 (논리 좌표 400×700) ─────────
+  const W = 400, H = 700;
+  const GRAVITY = 1100, MAX_SPEED = 1700, BALL_R = 9;
+  const LANE_X = 355;                       // 발사 레인 안쪽 벽
+  const BALL_HOME = { x: (LANE_X + 390) / 2, y: 690 - BALL_R };
+
+  const walls = [];   // { ax, ay, bx, by, e, kind, flash }
+  function seg(ax, ay, bx, by, e = 0.5, kind = 'wall') {
+    const s = { ax, ay, bx, by, e, kind, flash: 0 };
+    walls.push(s);
+    return s;
+  }
+  // 위쪽 아치
+  const ARC = { x: 200, y: 200, r: 190 };
+  for (let i = 0, n = 28; i < n; i++) {
+    const a1 = Math.PI + Math.PI * i / n, a2 = Math.PI + Math.PI * (i + 1) / n;
+    seg(ARC.x + ARC.r * Math.cos(a1), ARC.y + ARC.r * Math.sin(a1),
+        ARC.x + ARC.r * Math.cos(a2), ARC.y + ARC.r * Math.sin(a2), 0.4);
+  }
+  seg(10, 200, 10, 540);                    // 왼쪽 벽
+  seg(390, 200, 390, 690);                  // 오른쪽 바깥 벽
+  seg(LANE_X, 690, 390, 690, 0.1);          // 발사 레인 바닥
+  seg(LANE_X, 270, LANE_X, 690);            // 발사 레인 안쪽 벽
+  seg(10, 540, 104, 594, 0.3);              // 왼쪽 인레인 가이드
+  seg(LANE_X, 540, 261, 594, 0.3);          // 오른쪽 인레인 가이드
+
+  // 슬링샷: 안쪽 빗변이 공을 튕겨낸다
+  const slings = [
+    { pts: [[40, 440], [40, 515], [88, 548]] },
+    { pts: [[325, 440], [325, 515], [277, 548]] },
+  ];
+  for (const s of slings) {
+    const [A, B, C] = s.pts;
+    seg(A[0], A[1], B[0], B[1]);
+    seg(B[0], B[1], C[0], C[1]);
+    s.kicker = seg(A[0], A[1], C[0], C[1], 0.6, 'sling');
+  }
+
+  // 상단 롤오버 레인 (3개 모두 켜면 배율 +1)
+  const laneXs = [118, 161, 204, 247];
+  for (const x of laneXs) seg(x, 72, x, 102, 0.4);
+  const rollovers = [0, 1, 2].map(i => ({ x: (laneXs[i] + laneXs[i + 1]) / 2, y: 87, lit: false, inside: false }));
+
+  // 스탠딩 타깃 (둘 다 맞히면 보너스)
+  const targets = [
+    seg(45, 305, 68, 272, 0.5, 'target'),
+    seg(320, 305, 297, 272, 0.5, 'target'),
+  ];
+  targets.forEach(t => { t.lit = false; });
+
+  const bumpers = [
+    { x: 125, y: 210, r: 22, flash: 0 },
+    { x: 240, y: 210, r: 22, flash: 0 },
+    { x: 182, y: 292, r: 22, flash: 0 },
+  ];
+
+  // 플리퍼: 피벗을 중심으로 회전, 끝점 속도를 공에 전달
+  const FLIP_LEN = 62, FLIP_THICK = 7, FLIP_UP_SPEED = 22, FLIP_DOWN_SPEED = 14;
+  const flippers = [
+    { px: 112, py: 600, rest: 0.52,           up: -0.45,          a: 0.52,           w: 0, pressed: false },
+    { px: 253, py: 600, rest: Math.PI - 0.52, up: Math.PI + 0.45, a: Math.PI - 0.52, w: 0, pressed: false },
+  ];
+  const tip = f => ({ x: f.px + FLIP_LEN * Math.cos(f.a), y: f.py + FLIP_LEN * Math.sin(f.a) });
+
+  // ───────── 게임 상태 ─────────
+  const ball = { x: 0, y: 0, vx: 0, vy: 0, r: BALL_R };
+  let state = 'ready', score = 0, mult = 1, ballsLeft = 3, best = 0;
+  let charging = false, charge = 0, stillTime = 0, targetBonusFlash = 0;
+
+  function resetBall() {
+    ball.x = BALL_HOME.x; ball.y = BALL_HOME.y; ball.vx = 0; ball.vy = 0;
+    state = 'ready';
+  }
+
+  function newGame() {
+    score = 0; mult = 1; ballsLeft = 3;
+    rollovers.forEach(r => { r.lit = false; });
+    targets.forEach(t => { t.lit = false; });
+    $('overlay').classList.remove('show');
+    resetBall();
+    updateHud();
+  }
+
+  function addScore(pts) {
+    score += pts * mult;
+    updateHud();
+  }
+
+  function updateHud() {
+    $('score').textContent = score.toLocaleString();
+    $('mult').textContent = '×' + mult;
+    $('balls').textContent = '●'.repeat(ballsLeft) + '○'.repeat(Math.max(0, 3 - ballsLeft));
+    $('best').textContent = '최고 ' + Math.max(best, score).toLocaleString();
+  }
+
+  function inLane() { return ball.x > LANE_X && ball.y > 600; }
+
+  // ───────── 충돌 ─────────
+  // 공을 표면 밖으로 밀어내고 법선을 돌려준다
+  function pushOutSeg(ax, ay, bx, by, extra) {
+    const dx = bx - ax, dy = by - ay;
+    let t = ((ball.x - ax) * dx + (ball.y - ay) * dy) / (dx * dx + dy * dy);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const px = ax + t * dx, py = ay + t * dy;
+    let nx = ball.x - px, ny = ball.y - py;
+    const d = Math.hypot(nx, ny), R = ball.r + extra;
+    if (d >= R || d === 0) return null;
+    nx /= d; ny /= d;
+    ball.x = px + nx * R; ball.y = py + ny * R;
+    return { nx, ny, px, py };
+  }
+
+  // 움직이는 표면(sv)에 대한 상대속도로 반사. 충돌 속도를 반환
+  function bounce(nx, ny, e, svx = 0, svy = 0) {
+    const vn = (ball.vx - svx) * nx + (ball.vy - svy) * ny;
+    if (vn >= 0) return 0;
+    ball.vx -= (1 + e) * vn * nx;
+    ball.vy -= (1 + e) * vn * ny;
+    return -vn;
+  }
+
+  function collideWalls() {
+    for (const s of walls) {
+      const c = pushOutSeg(s.ax, s.ay, s.bx, s.by, s.kind === 'target' ? 3 : 0);
+      if (!c) continue;
+      const impact = bounce(c.nx, c.ny, s.e);
+      if (s.kind === 'sling' && impact > 60) {
+        ball.vx += c.nx * 420; ball.vy += c.ny * 420;
+        s.flash = 1;
+        addScore(10);
+        haptic.hit();
+      } else if (s.kind === 'target' && impact > 60) {
+        s.flash = 1;
+        if (!s.lit) { s.lit = true; addScore(250); haptic.hit(); }
+        if (targets.every(t => t.lit)) {
+          addScore(1000);
+          targetBonusFlash = 1;
+          targets.forEach(t => { t.lit = false; });
+          haptic.big();
+        }
+      }
+    }
+  }
+
+  function collideBumpers() {
+    for (const b of bumpers) {
+      let nx = ball.x - b.x, ny = ball.y - b.y;
+      const d = Math.hypot(nx, ny), R = b.r + ball.r;
+      if (d >= R || d === 0) continue;
+      nx /= d; ny /= d;
+      ball.x = b.x + nx * R; ball.y = b.y + ny * R;
+      bounce(nx, ny, 0.6);
+      // 최소 반발 속도 보장
+      const out = ball.vx * nx + ball.vy * ny;
+      if (out < 520) { ball.vx += nx * (520 - out); ball.vy += ny * (520 - out); }
+      b.flash = 1;
+      addScore(100);
+      haptic.hit();
+    }
+  }
+
+  function collideFlippers() {
+    for (const f of flippers) {
+      const t = tip(f);
+      const c = pushOutSeg(f.px, f.py, t.x, t.y, FLIP_THICK);
+      if (!c) continue;
+      // 접촉점의 표면 속도 = ω × r
+      const svx = -f.w * (c.py - f.py), svy = f.w * (c.px - f.px);
+      bounce(c.nx, c.ny, 0.3, svx, svy);
+    }
+  }
+
+  function checkRollovers() {
+    for (const r of rollovers) {
+      const inside = Math.hypot(ball.x - r.x, ball.y - r.y) < 14;
+      if (inside && !r.inside) {
+        r.lit = true;
+        addScore(50);
+        haptic.tap();
+        if (rollovers.every(q => q.lit)) {
+          mult = Math.min(5, mult + 1);
+          rollovers.forEach(q => { q.lit = false; });
+          addScore(500);
+          haptic.big();
+        }
+      }
+      r.inside = inside;
+    }
+  }
+
+  // ───────── 물리 스텝 ─────────
+  const STEP = 1 / 120, SUBSTEPS = 4, DT = STEP / SUBSTEPS;
+
+  function updateFlippers(dt) {
+    for (const f of flippers) {
+      const target = f.pressed ? f.up : f.rest;
+      const speed = f.pressed ? FLIP_UP_SPEED : FLIP_DOWN_SPEED;
+      const diff = target - f.a;
+      const maxMove = speed * dt;
+      const move = Math.abs(diff) <= maxMove ? diff : Math.sign(diff) * maxMove;
+      f.a += move;
+      f.w = move / dt;
+    }
+  }
+
+  function physics(dt) {
+    updateFlippers(dt);
+    if (state === 'ready') {
+      ball.x = BALL_HOME.x; ball.y = BALL_HOME.y + charge * 20; ball.vx = ball.vy = 0;
+      return;
+    }
+    if (state !== 'play') return;
+
+    ball.vy += GRAVITY * dt;
+    const sp = Math.hypot(ball.vx, ball.vy);
+    if (sp > MAX_SPEED) { ball.vx *= MAX_SPEED / sp; ball.vy *= MAX_SPEED / sp; }
+    ball.x += ball.vx * dt;
+    ball.y += ball.vy * dt;
+
+    collideWalls();
+    collideBumpers();
+    collideFlippers();
+    checkRollovers();
+
+    if (ball.y > H + 30) loseBall();
+  }
+
+  function tick(step) {
+    for (let i = 0; i < SUBSTEPS; i++) physics(DT);
+
+    if (charging) charge = Math.min(1, charge + step);
+    for (const b of bumpers) b.flash = Math.max(0, b.flash - step * 4);
+    for (const s of walls) s.flash = Math.max(0, s.flash - step * 4);
+    targetBonusFlash = Math.max(0, targetBonusFlash - step * 1.5);
+
+    // 공이 어딘가에 걸려 멈추면 살짝 흔들어 준다
+    if (state === 'play' && !inLane() && Math.hypot(ball.vx, ball.vy) < 15) {
+      stillTime += step;
+      if (stillTime > 2) { ball.vx = (Math.random() - 0.5) * 300; ball.vy = -200; stillTime = 0; }
+    } else stillTime = 0;
+  }
+
+  function launch() {
+    if (state === 'ready' || (state === 'play' && inLane() && Math.hypot(ball.vx, ball.vy) < 30)) {
+      ball.x = BALL_HOME.x; ball.y = BALL_HOME.y;
+      ball.vx = 0;
+      ball.vy = -(650 + 950 * charge);
+      state = 'play';
+      haptic.big();
+    }
+    charge = 0;
+  }
+
+  async function loseBall() {
+    ballsLeft--;
+    haptic.lose();
+    updateHud();
+    if (ballsLeft > 0) {
+      state = 'wait';
+      setTimeout(resetBall, 700);
+      return;
+    }
+    state = 'over';
+    const record = score > best;
+    if (record) { best = score; store.set('pb_best', best); }
+    updateHud();
+    if (record) haptic.win();
+    $('resultTitle').textContent = record ? '신기록! 🏆' : '게임 오버';
+    $('resultText').textContent = `점수 ${score.toLocaleString()}` + (record ? '' : ` · 최고 ${best.toLocaleString()}`);
+    setTimeout(() => $('overlay').classList.add('show'), 400);
+  }
+
+  // ───────── 렌더링 ─────────
+  let scale = 1, dpr = 1;
+
+  function resize() {
+    const wrap = $('wrap');
+    dpr = window.devicePixelRatio || 1;
+    scale = Math.min(wrap.clientWidth / W, wrap.clientHeight / H);
+    cv.style.width = W * scale + 'px';
+    cv.style.height = H * scale + 'px';
+    cv.width = Math.round(W * scale * dpr);
+    cv.height = Math.round(H * scale * dpr);
+  }
+
+  function glowLine(ax, ay, bx, by, color, width, blur = 10) {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.shadowColor = color; ctx.shadowBlur = blur;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+  }
+
+  function draw() {
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    ctx.lineCap = 'round';
+
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#120a2a'); bg.addColorStop(1, '#05060f');
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+    // 바닥 장식 그리드
+    ctx.strokeStyle = 'rgba(120,90,255,.07)'; ctx.lineWidth = 1;
+    for (let y = 0; y < H; y += 28) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+    if (targetBonusFlash > 0) {
+      ctx.fillStyle = `rgba(255,220,80,${targetBonusFlash * 0.15})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // 롤오버 레인 불빛
+    for (const r of rollovers) {
+      ctx.shadowColor = '#3cff9a'; ctx.shadowBlur = r.lit ? 16 : 0;
+      ctx.fillStyle = r.lit ? '#3cff9a' : 'rgba(60,255,154,.18)';
+      ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // 슬링샷 면 채우기
+    for (const s of slings) {
+      const [A, B, C] = s.pts;
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = `rgba(255,214,10,${0.12 + s.kicker.flash * 0.5})`;
+      ctx.beginPath(); ctx.moveTo(...A); ctx.lineTo(...B); ctx.lineTo(...C); ctx.closePath(); ctx.fill();
+    }
+
+    for (const s of walls) {
+      if (s.kind === 'sling') glowLine(s.ax, s.ay, s.bx, s.by, s.flash > 0 ? '#fff6a0' : '#ffd60a', 4);
+      else if (s.kind === 'target') glowLine(s.ax, s.ay, s.bx, s.by, s.lit ? '#3cff9a' : (s.flash > 0 ? '#ffffff' : '#ff4d6d'), 7);
+      else glowLine(s.ax, s.ay, s.bx, s.by, '#22d3ee', 3, 8);
+    }
+
+    for (const b of bumpers) {
+      ctx.shadowColor = '#ff3df2'; ctx.shadowBlur = 14 + b.flash * 20;
+      ctx.fillStyle = b.flash > 0 ? `rgba(255,${120 + b.flash * 135},255,1)` : '#2a0b3d';
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#ff3df2'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.shadowBlur = 0; ctx.fillStyle = '#ff9ff7';
+      ctx.beginPath(); ctx.arc(b.x, b.y, 7, 0, Math.PI * 2); ctx.fill();
+    }
+
+    for (const f of flippers) {
+      const t = tip(f);
+      glowLine(f.px, f.py, t.x, t.y, '#ff8a00', FLIP_THICK * 2, 14);
+      ctx.shadowBlur = 0; ctx.fillStyle = '#ffe0b0';
+      ctx.beginPath(); ctx.arc(f.px, f.py, 3, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // 플런저
+    const py = 692 + charge * 20;
+    ctx.shadowColor = '#22d3ee'; ctx.shadowBlur = 10;
+    ctx.fillStyle = '#22d3ee';
+    ctx.fillRect(LANE_X + 6, py - 2, 390 - LANE_X - 12, 4);
+    ctx.fillStyle = 'rgba(34,211,238,.35)';
+    ctx.fillRect(LANE_X + 14, py + 2, 390 - LANE_X - 28, H - py);
+
+    if (state !== 'over' && state !== 'wait') {
+      const g = ctx.createRadialGradient(ball.x - 3, ball.y - 3, 1, ball.x, ball.y, ball.r);
+      g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#9aa7c7');
+      ctx.shadowColor = '#ffffff'; ctx.shadowBlur = 14;
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.shadowBlur = 0;
+    if (mult > 1) {
+      ctx.fillStyle = 'rgba(60,255,154,.8)'; ctx.font = '700 16px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('×' + mult, 182, 130);
+    }
+    if (state === 'ready') {
+      ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.font = '600 15px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('발사 버튼을 길게 눌렀다 놓으세요', 182, 420);
+    }
+  }
+
+  // ───────── 루프 ─────────
+  let last = performance.now(), acc = 0;
+  function frame(now) {
+    acc += Math.min(0.1, (now - last) / 1000);
+    last = now;
+    while (acc >= STEP) { tick(STEP); acc -= STEP; }
+    $('charge').style.width = charge * 100 + '%';
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // ───────── 입력 ─────────
+  const pointers = new Map();          // pointerId → 0(왼쪽) | 1(오른쪽)
+  const keys = { left: false, right: false };
+  function syncFlippers() {
+    const vals = [...pointers.values()];
+    const was = flippers.map(f => f.pressed);
+    flippers[0].pressed = keys.left || vals.includes(0);
+    flippers[1].pressed = keys.right || vals.includes(1);
+    flippers.forEach((f, i) => { if (f.pressed && !was[i]) haptic.tap(); });
+  }
+
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    cv.setPointerCapture(e.pointerId);
+    const rect = cv.getBoundingClientRect();
+    pointers.set(e.pointerId, e.clientX - rect.left < rect.width / 2 ? 0 : 1);
+    syncFlippers();
+  });
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    cv.addEventListener(ev, e => { pointers.delete(e.pointerId); syncFlippers(); });
+  }
+  cv.addEventListener('contextmenu', e => e.preventDefault());
+
+  const launchBtn = $('launch');
+  launchBtn.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    launchBtn.setPointerCapture(e.pointerId);
+    charging = true; charge = 0;
+  });
+  for (const ev of ['pointerup', 'pointercancel']) {
+    launchBtn.addEventListener(ev, () => { if (charging) { charging = false; launch(); } });
+  }
+  launchBtn.addEventListener('contextmenu', e => e.preventDefault());
+
+  const LEFT_KEYS = ['KeyZ', 'ArrowLeft', 'ShiftLeft'];
+  const RIGHT_KEYS = ['Slash', 'ArrowRight', 'ShiftRight'];
+  const LAUNCH_KEYS = ['Space', 'ArrowDown'];
+  window.addEventListener('keydown', e => {
+    if (LEFT_KEYS.includes(e.code)) keys.left = true;
+    else if (RIGHT_KEYS.includes(e.code)) keys.right = true;
+    else if (LAUNCH_KEYS.includes(e.code)) { if (!charging) { charging = true; charge = 0; } }
+    else return;
+    e.preventDefault();
+    syncFlippers();
+  });
+  window.addEventListener('keyup', e => {
+    if (LEFT_KEYS.includes(e.code)) keys.left = false;
+    else if (RIGHT_KEYS.includes(e.code)) keys.right = false;
+    else if (LAUNCH_KEYS.includes(e.code)) { charging = false; launch(); }
+    syncFlippers();
+  });
+
+  $('again').onclick = () => newGame();
+  window.addEventListener('resize', resize);
+
+  resize();
+  newGame();
+  store.get('pb_best').then(v => { best = Number(v) || 0; updateHud(); });
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

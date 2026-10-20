@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>경마</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #0f1115);
+    --text: var(--tg-theme-text-color, #f2f3f5);
+    --hint: var(--tg-theme-hint-color, #8b8f98);
+    --card: var(--tg-theme-secondary-bg-color, #1a1d24);
+    --accent: var(--tg-theme-button-color, #2f80ed);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --good: #4cd07d;
+    --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px; min-height: 100vh;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  .page { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .points { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .race-no { color: var(--hint); font-size: 13px; }
+  .refill {
+    border: 0; border-radius: 10px; padding: 8px 12px; font: inherit; font-size: 13px; font-weight: 600;
+    background: var(--good); color: #0b2a17; cursor: pointer;
+  }
+  .refill[disabled] { background: var(--card); color: var(--hint); cursor: default; }
+  .track { border-radius: 14px; overflow: hidden; background: #2e7d32; }
+  canvas { display: block; width: 100%; }
+  .rank { display: flex; gap: 4px; min-height: 26px; align-items: center; flex-wrap: wrap; }
+  .rank .lbl { font-size: 12px; color: var(--hint); margin-right: 4px; }
+  .chip {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 24px; height: 24px; padding: 0 6px; border-radius: 7px;
+    font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums;
+  }
+  .card { background: var(--card); border-radius: 14px; padding: 12px; }
+  .card h3 { margin: 0 0 10px; font-size: 15px; }
+  .horses { display: flex; flex-direction: column; gap: 6px; }
+  .horse {
+    display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
+    padding: 8px 10px; border-radius: 10px; border: 2px solid transparent; cursor: pointer;
+    background: rgba(127,127,127,.08);
+  }
+  .horse.sel { border-color: var(--accent); background: rgba(47,128,237,.12); }
+  .horse .name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 6px; align-items: center; font-size: 10px; color: var(--hint); }
+  .bar { height: 5px; border-radius: 3px; background: rgba(127,127,127,.2); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 3px; }
+  .odds { font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums; text-align: right; }
+  .odds small { display: block; font-size: 10px; font-weight: 500; color: var(--hint); }
+  .tabs { display: flex; gap: 6px; background: rgba(127,127,127,.12); padding: 4px; border-radius: 10px; margin-bottom: 10px; }
+  .tabs button {
+    flex: 1; border: 0; background: transparent; color: var(--hint); font: inherit; font-size: 14px;
+    padding: 8px; border-radius: 8px; cursor: pointer;
+  }
+  .tabs button.on { background: var(--accent); color: var(--accent-text); font-weight: 700; }
+  .tip { font-size: 12px; color: var(--hint); margin: 0 0 10px; }
+  .amount-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .amount { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .expect { font-size: 13px; color: var(--hint); text-align: right; }
+  .expect b { color: var(--good); }
+  .chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .chips button {
+    border: 0; border-radius: 9px; padding: 9px 0; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    background: rgba(127,127,127,.15); color: var(--text);
+  }
+  .go {
+    width: 100%; border: 0; border-radius: 14px; padding: 15px; font: inherit; font-size: 16px; font-weight: 800;
+    background: var(--accent); color: var(--accent-text); cursor: pointer;
+  }
+  .go[disabled] { opacity: .45; cursor: default; }
+  .locked { pointer-events: none; opacity: .5; }
+  .history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .history li { display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+  .history .no { color: var(--hint); font-variant-numeric: tabular-nums; }
+  .history .bet { color: var(--hint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history .delta { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .plus { color: var(--good); } .minus { color: var(--bad); }
+  .empty { font-size: 13px; color: var(--hint); }
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+    align-items: center; justify-content: center; padding: 16px; z-index: 10;
+  }
+  .overlay.show { display: flex; }
+  .dialog { background: var(--card); border-radius: 18px; padding: 22px; width: min(340px, 100%); text-align: center; }
+  .dialog h2 { margin: 0 0 14px; font-size: 20px; }
+  .podium { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; text-align: left; }
+  .podium div { display: grid; grid-template-columns: 28px auto 1fr auto; gap: 8px; align-items: center; font-size: 14px; }
+  .podium .medal { font-size: 22px; }
+  .podium .time { font-variant-numeric: tabular-nums; color: var(--hint); font-size: 12px; text-align: right; }
+  .outcome { font-size: 15px; margin-bottom: 16px; line-height: 1.5; }
+  .outcome b { font-size: 20px; }
+  .dialog button {
+    border: 0; border-radius: 12px; padding: 12px 20px; width: 100%; font: inherit; font-weight: 700; cursor: pointer;
+    background: var(--accent); color: var(--accent-text);
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <div>
+      <div class="points" id="points">0P</div>
+      <div class="race-no" id="raceNo"></div>
+    </div>
+    <button class="refill" id="refill" hidden>🎁 무료 500P</button>
+  </div>
+
+  <div class="track"><canvas id="cv"></canvas></div>
+  <div class="rank" id="rank"></div>
+
+  <div id="betArea">
+    <div class="card">
+      <div class="tabs" id="tabs">
+        <button data-type="win" class="on">단승</button>
+        <button data-type="quin">복승</button>
+      </div>
+      <p class="tip" id="tip"></p>
+      <div class="horses" id="horses"></div>
+    </div>
+  </div>
+
+  <div class="card" id="betPanel">
+    <div class="amount-row">
+      <div class="amount" id="amount">0P</div>
+      <div class="expect" id="expect"></div>
+    </div>
+    <div class="chips" id="chips">
+      <button data-add="10">+10</button>
+      <button data-add="50">+50</button>
+      <button data-add="100">+100</button>
+      <button data-add="500">+500</button>
+      <button data-add="all">올인</button>
+      <button data-add="reset">초기화</button>
+    </div>
+  </div>
+
+  <button class="go" id="go">출발!</button>
+
+  <div class="card">
+    <h3>최근 경주</h3>
+    <ul class="history" id="history"></ul>
+  </div>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="dialog">
+    <h2>📸 사진 판정</h2>
+    <div class="podium" id="podium"></div>
+    <div class="outcome" id="outcome"></div>
+    <button id="next">다음 경주</button>
+  </div>
+</div>
+
+<script>
+  const tg = window.Telegram?.WebApp;
+  tg?.ready();
+  tg?.expand();
+  if (tg?.BackButton) {
+    tg.BackButton.show();
+    tg.BackButton.onClick(() => { location.href = '../index.html'; });
+  }
+  const haptic = {
+    tap:   () => tg?.HapticFeedback?.impactOccurred('light'),
+    heavy: () => tg?.HapticFeedback?.impactOccurred('heavy'),
+    pick:  () => tg?.HapticFeedback?.selectionChanged(),
+    win:   () => tg?.HapticFeedback?.notificationOccurred('success'),
+    lose:  () => tg?.HapticFeedback?.notificationOccurred('error'),
+  };
+
+  // 텔레그램 안에서는 CloudStorage(기기 간 동기화), 밖에서는 localStorage
+  const useCloud = !!(tg?.initData && tg.isVersionAtLeast?.('6.9'));
+  const store = {
+    get(key) {
+      return new Promise(res => {
+        try {
+          if (useCloud) tg.CloudStorage.getItem(key, (err, v) => res(err ? null : v || null));
+          else res(localStorage.getItem(key));
+        } catch { res(null); }
+      });
+    },
+    set(key, value) {
+      try {
+        if (useCloud) tg.CloudStorage.setItem(key, String(value));
+        else localStorage.setItem(key, String(value));
+      } catch {}
+    },
+  };
+
+  // ---- 경주 모델 ----
+  const D = 1000;            // 경주 거리 (단위 = m)
+  const STEP = 1 / 60;       // 고정 시뮬레이션 간격
+  const SIMS = 400;          // 배당률 계산용 몬테카를로 횟수
+  const MARGIN = 0.85;       // 환급률
+  const NAMES = ['번개', '질풍', '천둥', '흑풍', '은하수', '바람돌이', '적토마', '백설', '황금발굽',
+                 '폭풍질주', '샛별', '청룡', '회오리', '불꽃', '다크호스', '루나', '흑진주', '천리마'];
+  const COLORS = [
+    ['#e74c3c', '#fff'], ['#3498db', '#fff'], ['#2ecc71', '#08351c'], ['#f1c40f', '#3a2f00'],
+    ['#9b59b6', '#fff'], ['#e67e22', '#fff'], ['#1abc9c', '#063a30'], ['#ff6b9d', '#fff'],
+  ];
+
+  function makeRunner(h) {
+    return {
+      h, pos: 0, v: 0, noise: 0, fin: null,
+      kick: 0.3 + Math.random() * 1.4,     // 이번 경주의 막판 컨디션
+      react: 0.5 + Math.random() * 0.5,    // 출발 반응 속도
+      phase: Math.random() * 6,
+    };
+  }
+
+  function stepRunner(r, t, dt) {
+    if (r.fin != null) {               // 결승 후 감속
+      r.v *= Math.pow(0.35, dt);
+      r.pos += r.v * dt;
+      r.phase += r.v * dt * 0.35;
+      return;
+    }
+    r.noise += -r.noise * 1.0 * dt + (Math.random() * 2 - 1) * Math.sqrt(dt) * 20;
+    const h = r.h, ph = r.pos / D;
+    let v = 52 + h.spd * 0.09;
+    if (ph > 0.55) v -= (ph - 0.55) / 0.45 * (100 - h.sta) * 0.12;  // 지구력 부족 → 후반 감속
+    if (ph > 0.75) v += r.kick * h.bur * 0.06;                       // 최종 직선 스퍼트
+    v += r.noise;
+    v *= 0.3 + 0.7 * Math.min(1, t / r.react);
+    v = Math.max(15, v);
+    r.v = v;
+    if (r.pos + v * dt >= D) r.fin = t + (D - r.pos) / v;
+    r.pos += v * dt;
+    r.phase += v * dt * 0.35;
+  }
+
+  // 같은 모델로 미리 수백 번 돌려서 우승/복승 확률 → 배당률
+  function estimateOdds(horses) {
+    const n = horses.length, wins = new Array(n).fill(0), pairs = {};
+    for (let s = 0; s < SIMS; s++) {
+      const rs = horses.map(makeRunner);
+      let t = 0, finished = [];
+      while (finished.length < 2 && t < 60) {
+        for (let i = 0; i < n; i++) {
+          const r = rs[i];
+          if (r.fin != null) continue;
+          stepRunner(r, t, STEP);
+          if (r.fin != null) finished.push(i);
+        }
+        t += STEP;
+      }
+      finished.sort((a, b) => rs[a].fin - rs[b].fin);
+      wins[finished[0]]++;
+      const key = pairKey(finished[0], finished[1]);
+      pairs[key] = (pairs[key] || 0) + 1;
+    }
+    const toOdds = c => Math.max(1.1, Math.min(99, Math.floor(MARGIN / ((c + 0.5) / (SIMS + 1)) * 10) / 10));
+    horses.forEach((h, i) => { h.odds = toOdds(wins[i]); });
+    const pairOdds = {};
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) pairOdds[pairKey(i, j)] = toOdds(pairs[pairKey(i, j)] || 0);
+    return pairOdds;
+  }
+
+  const pairKey = (a, b) => a < b ? `${a}-${b}` : `${b}-${a}`;
+  const fmt = n => n.toLocaleString('ko-KR');
+  const $ = id => document.getElementById(id);
+
+  // ---- 상태 ----
+  let points = 1000, raceNo = 1, history = [], lastRefill = '';
+  let horses = [], pairOdds = {}, runners = [];
+  let betType = 'win', selected = [], amount = 0;
+  let racing = false, raceT = 0, acc = 0, lastTs = 0, camX = 0, countdown = 0, finalShown = false, lastRankAt = 0;
+  let placedBet = null;
+
+  function newRace() {
+    const n = 6 + Math.floor(Math.random() * 3);
+    const names = [...NAMES].sort(() => Math.random() - 0.5);
+    const r = () => 40 + Math.floor(Math.random() * 61);
+    horses = Array.from({ length: n }, (_, i) => ({
+      num: i + 1, name: names[i], color: COLORS[i][0], ink: COLORS[i][1],
+      spd: r(), sta: r(), bur: r(), odds: 0,
+    }));
+    pairOdds = estimateOdds(horses);
+    runners = horses.map(makeRunner);
+    selected = [];
+    amount = Math.min(amount, points);
+    raceT = 0; camX = 0; countdown = 0; finalShown = false; placedBet = null;
+    $('overlay').classList.remove('show');
+    $('raceNo').textContent = `제 ${raceNo}경주 · ${n}두 출전 · ${D}m`;
+    resize();
+    renderHorses();
+    renderRank();
+    renderBet();
+    setLocked(false);
+  }
+
+  // ---- 화면: 말 목록 / 베팅 ----
+  function chip(h) {
+    return `<span class="chip" style="background:${h.color};color:${h.ink}">${h.num}</span>`;
+  }
+
+  function renderHorses() {
+    $('horses').innerHTML = horses.map((h, i) => `
+      <div class="horse${selected.includes(i) ? ' sel' : ''}" data-i="${i}">
+        ${chip(h)}
+        <div>
+          <div class="name">${h.name}</div>
+          <div class="stats">
+            속도<div class="bar"><i style="width:${h.spd}%;background:#4aa3ff"></i></div>
+            지구력<div class="bar"><i style="width:${h.sta}%;background:#4cd07d"></i></div>
+            순발력<div class="bar"><i style="width:${h.bur}%;background:#ffa94d"></i></div>
+          </div>
+        </div>
+        <div class="odds">×${h.odds.toFixed(1)}<small>단승</small></div>
+      </div>`).join('');
+    $('tip').textContent = betType === 'win'
+      ? '1등으로 들어올 말 1마리를 고르세요'
+      : '1·2등으로 들어올 말 2마리를 고르세요 (순서 무관)';
+  }
+
+  function currentOdds() {
+    if (betType === 'win') return selected.length === 1 ? horses[selected[0]].odds : 0;
+    return selected.length === 2 ? pairOdds[pairKey(selected[0], selected[1])] : 0;
+  }
+
+  function renderBet() {
+    $('points').textContent = `${fmt(points)}P`;
+    $('amount').textContent = `${fmt(amount)}P`;
+    const odds = currentOdds();
+    $('expect').innerHTML = odds
+      ? `배당 ×${odds.toFixed(1)}<br>적중 시 <b>${fmt(Math.floor(amount * odds))}P</b>`
+      : '';
+    const go = $('go');
+    if (amount > 0 && !odds) { go.disabled = true; go.textContent = betType === 'win' ? '말 1마리를 고르세요' : '말 2마리를 고르세요'; }
+    else { go.disabled = false; go.textContent = amount > 0 ? `출발! (${fmt(amount)}P 베팅)` : '베팅 없이 관전하기'; }
+    renderRefill();
+  }
+
+  function renderRefill() {
+    const btn = $('refill');
+    btn.hidden = points >= 10 || racing;
+    const done = lastRefill === today();
+    btn.disabled = done;
+    btn.textContent = done ? '내일 다시 충전 가능' : '🎁 무료 500P';
+  }
+
+  function setLocked(on) {
+    $('betArea').classList.toggle('locked', on);
+    $('betPanel').classList.toggle('locked', on);
+    $('go').disabled = on;
+    if (on) $('go').textContent = '경주 중…';
+  }
+
+  function today() {
+    const d = new Date();
+    return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+  }
+
+  // ---- 캔버스 ----
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  const LANE = 30, PAD = 16, X0 = 60, PPU = 3.5;
+  let cw = 0, ch = 0;
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    cw = cv.parentElement.clientWidth;
+    ch = PAD * 2 + horses.length * LANE;
+    cv.style.height = ch + 'px';
+    cv.width = Math.round(cw * dpr);
+    cv.height = Math.round(ch * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function drawHorse(x, y, h, phase, moving) {
+    const sw = moving ? Math.sin(phase) * 5 : 0;
+    const bob = moving ? -Math.abs(Math.sin(phase)) * 2 : 0;
+    y += bob;
+    // 다리
+    ctx.strokeStyle = '#4a2f1b';
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x + 7, y + 2); ctx.lineTo(x + 7 + sw, y + 11 - bob);
+    ctx.moveTo(x + 4, y + 2); ctx.lineTo(x + 4 - sw, y + 11 - bob);
+    ctx.moveTo(x - 6, y + 2); ctx.lineTo(x - 6 - sw, y + 11 - bob);
+    ctx.moveTo(x - 9, y + 2); ctx.lineTo(x - 9 + sw, y + 11 - bob);
+    ctx.stroke();
+    // 꼬리
+    ctx.beginPath();
+    ctx.moveTo(x - 11, y - 2);
+    ctx.quadraticCurveTo(x - 17, y - 2 + sw * 0.3, x - 16, y + 5);
+    ctx.stroke();
+    // 몸통, 목, 머리
+    ctx.fillStyle = '#8b5a2b';
+    ctx.beginPath(); ctx.ellipse(x, y, 11.5, 5.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + 6, y - 3); ctx.lineTo(x + 12, y - 10); ctx.lineTo(x + 15, y - 7); ctx.lineTo(x + 10, y + 1);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + 15.5, y - 8, 5, 2.8, 0.45, 0, Math.PI * 2); ctx.fill();
+    // 안장 천 + 번호
+    ctx.fillStyle = h.color;
+    ctx.fillRect(x - 6, y - 4, 9, 7);
+    ctx.fillStyle = h.ink;
+    ctx.font = 'bold 7px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(h.num, x - 1.5, y - 0.3);
+    // 기수
+    ctx.fillStyle = h.color;
+    ctx.beginPath(); ctx.ellipse(x, y - 9, 3.5, 4, 0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(x + 2.5, y - 13.5, 2.6, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function draw() {
+    if (!cw) return;
+    const top = PAD, bot = ch - PAD;
+    ctx.fillStyle = '#2e7d32';
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.fillStyle = '#b8865b';
+    ctx.fillRect(0, top, cw, bot - top);
+    // 흙 무늬 (카메라와 함께 흐름)
+    ctx.fillStyle = 'rgba(0,0,0,.05)';
+    for (let x = -(camX % 60); x < cw; x += 60) ctx.fillRect(x, top, 30, bot - top);
+    ctx.strokeStyle = 'rgba(255,255,255,.14)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < horses.length; i++) {
+      const y = top + i * LANE + 0.5;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke();
+    }
+    // 펜스
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, top - 3, cw, 3);
+    ctx.fillRect(0, bot, cw, 3);
+    for (let wx = Math.floor(camX / 50) * 50; wx < camX + cw; wx += 50) {
+      ctx.fillRect(wx - camX, top - 9, 2, 6);
+      ctx.fillRect(wx - camX, bot + 3, 2, 6);
+    }
+    // 남은 거리 표지
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    for (let k = 100; k < D; k += 100) {
+      const x = X0 + k * PPU - camX;
+      if (x < -40 || x > cw + 10) continue;
+      ctx.fillStyle = 'rgba(255,255,255,.35)';
+      ctx.fillRect(x - 1, top, 2, bot - top);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(`${D - k}m`, x + 4, top / 2);
+    }
+    // 출발 게이트
+    const sx = X0 - camX;
+    if (sx > -10) { ctx.fillStyle = '#ddd'; ctx.fillRect(sx + 14, top, 3, bot - top); }
+    // 결승선 (체크무늬)
+    const fx = X0 + D * PPU - camX + 18;
+    if (fx > -12 && fx < cw + 12) {
+      for (let y = top, row = 0; y < bot; y += 6, row++) {
+        for (let c = 0; c < 2; c++) {
+          ctx.fillStyle = (row + c) % 2 ? '#111' : '#fff';
+          ctx.fillRect(fx + c * 6, y, 6, Math.min(6, bot - y));
+        }
+      }
+      ctx.fillStyle = '#fff';
+      ctx.fillText('FINISH', fx - 8, top / 2);
+    }
+    // 말 (코끝이 pos 위치에 오도록 +18 오프셋은 결승선과 맞춤)
+    runners.forEach((r, i) => {
+      const x = X0 + r.pos * PPU - camX;
+      const y = top + i * LANE + LANE / 2 + 2;
+      if (x > -30 && x < cw + 30) drawHorse(x, y, r.h, r.phase, racing && raceT > 0);
+    });
+    // 안내 문구
+    if (countdown > 0) banner(String(countdown), 34);
+    else if (racing && finalShown && runners.some(r => r.fin == null)) smallBanner('🔥 최종 직선!');
+  }
+
+  function banner(text, size) {
+    ctx.fillStyle = 'rgba(0,0,0,.45)';
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.fillStyle = '#fff';
+    ctx.font = `800 ${size}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, cw / 2, ch / 2);
+  }
+
+  function smallBanner(text) {
+    ctx.font = 'bold 12px sans-serif';
+    const w = ctx.measureText(text).width + 16;
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(8, PAD + 4, w, 20, 6) : ctx.rect(8, PAD + 4, w, 20); ctx.fill();
+    ctx.fillStyle = '#ffd43b';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, 16, PAD + 14);
+  }
+
+  // ---- 순위 띠 ----
+  function standings() {
+    return [...runners].sort((a, b) => {
+      if (a.fin != null && b.fin != null) return a.fin - b.fin;
+      if (a.fin != null) return -1;
+      if (b.fin != null) return 1;
+      return b.pos - a.pos;
+    });
+  }
+
+  function renderRank() {
+    const list = racing || raceT > 0 ? standings() : runners;
+    $('rank').innerHTML = `<span class="lbl">${racing || raceT > 0 ? '현재 순위' : '출전마'}</span>` +
+      list.map(r => chip(r.h)).join('');
+  }
+
+  // ---- 경주 진행 ----
+  function startRace() {
+    if (racing) return;
+    const odds = currentOdds();
+    if (amount > 0 && !odds) return;
+    if (amount > 0) {
+      points -= amount;
+      store.set('hr_points', points);
+      placedBet = { type: betType, sel: [...selected], amount, odds };
+    }
+    racing = true;
+    setLocked(true);
+    renderRefill();
+    $('points').textContent = `${fmt(points)}P`;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    countdown = 3;
+    const tick = () => {
+      draw();
+      haptic.heavy();
+      if (countdown > 0) { setTimeout(() => { countdown--; tick(); }, 700); return; }
+      lastTs = performance.now();
+      acc = 0;
+      requestAnimationFrame(frame);
+    };
+    tick();
+  }
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - lastTs) / 1000);
+    lastTs = now;
+    acc += dt;
+    while (acc >= STEP) {
+      for (const r of runners) stepRunner(r, raceT, STEP);
+      raceT += STEP;
+      acc -= STEP;
+    }
+    const leader = runners.reduce((a, b) => (b.pos > a.pos ? b : a));
+    if (!finalShown && leader.pos / D > 0.75) { finalShown = true; haptic.heavy(); }
+    const target = Math.max(0, Math.min(X0 + D * PPU + 90 - cw, X0 + leader.pos * PPU - cw * 0.68));
+    camX += (target - camX) * Math.min(1, dt * 6);
+    draw();
+    if (now - lastRankAt > 120) { renderRank(); lastRankAt = now; }
+    const allIn = runners.every(r => r.fin != null);
+    const lastFin = allIn ? Math.max(...runners.map(r => r.fin)) : 0;
+    if (allIn && raceT > lastFin + 1) finishRace();
+    else requestAnimationFrame(frame);
+  }
+
+  function finishRace() {
+    racing = false;
+    renderRank();
+    const order = standings();
+    const top = order.slice(0, 3);
+    const medals = ['🥇', '🥈', '🥉'];
+    $('podium').innerHTML = top.map((r, k) => `
+      <div><span class="medal">${medals[k]}</span>${chip(r.h)}<span>${r.h.name}</span>
+      <span class="time">${r.fin.toFixed(2)}초${k ? ` (+${(r.fin - top[0].fin).toFixed(2)})` : ''}</span></div>`).join('');
+
+    const w1 = runners.indexOf(order[0]), w2 = runners.indexOf(order[1]);
+    let delta = 0, betLabel = null, html;
+    if (placedBet) {
+      const b = placedBet;
+      betLabel = b.type === 'win'
+        ? `단승 ${b.sel[0] + 1}번`
+        : `복승 ${Math.min(...b.sel) + 1}-${Math.max(...b.sel) + 1}`;
+      const hit = b.type === 'win' ? b.sel[0] === w1 : pairKey(b.sel[0], b.sel[1]) === pairKey(w1, w2);
+      if (hit) {
+        const payout = Math.floor(b.amount * b.odds);
+        points += payout;
+        delta = payout - b.amount;
+        html = `🎉 ${betLabel} 적중!<br><b class="plus">+${fmt(payout)}P</b><br><small>배당 ×${b.odds.toFixed(1)}</small>`;
+        haptic.win();
+      } else {
+        delta = -b.amount;
+        html = `😢 ${betLabel} 미적중<br><b class="minus">-${fmt(b.amount)}P</b>`;
+        haptic.lose();
+      }
+      store.set('hr_points', points);
+    } else {
+      html = '관전한 경주예요. 다음엔 베팅해 보세요!';
+      haptic.tap();
+    }
+    $('outcome').innerHTML = html;
+
+    history.unshift({ no: raceNo, w: order[0].h.num, wn: order[0].h.name, wc: order[0].h.color, wi: order[0].h.ink, bet: betLabel, d: delta });
+    history = history.slice(0, 10);
+    store.set('hr_history', JSON.stringify(history));
+    raceNo++;
+    store.set('hr_race_no', raceNo);
+    renderHistory();
+    $('points').textContent = `${fmt(points)}P`;
+    setTimeout(() => $('overlay').classList.add('show'), 400);
+  }
+
+  function renderHistory() {
+    $('history').innerHTML = history.length
+      ? history.map(h => `
+        <li><span class="no">#${h.no}</span>
+          <span class="chip" style="background:${h.wc};color:${h.wi}">${h.w}</span>
+          <span class="bet">${h.wn}${h.bet ? ` · ${h.bet}` : ''}</span>
+          <span class="delta ${h.d > 0 ? 'plus' : h.d < 0 ? 'minus' : ''}">${h.bet ? (h.d > 0 ? '+' : '') + fmt(h.d) + 'P' : '관전'}</span></li>`).join('')
+      : '<li class="empty">아직 경주 기록이 없어요</li>';
+  }
+
+  // ---- 입력 ----
+  $('horses').addEventListener('click', e => {
+    const el = e.target.closest('.horse');
+    if (!el || racing) return;
+    const i = +el.dataset.i;
+    if (betType === 'win') selected = selected[0] === i ? [] : [i];
+    else if (selected.includes(i)) selected = selected.filter(x => x !== i);
+    else selected = [...selected, i].slice(-2);
+    haptic.pick();
+    renderHorses();
+    renderBet();
+  });
+
+  $('tabs').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b || racing || b.dataset.type === betType) return;
+    betType = b.dataset.type;
+    document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+    if (betType === 'win') selected = selected.slice(0, 1);
+    haptic.pick();
+    renderHorses();
+    renderBet();
+  });
+
+  $('chips').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b || racing) return;
+    const a = b.dataset.add;
+    if (a === 'reset') amount = 0;
+    else if (a === 'all') amount = points;
+    else amount = Math.min(points, amount + Number(a));
+    haptic.tap();
+    renderBet();
+  });
+
+  $('refill').onclick = () => {
+    if (points >= 10 || lastRefill === today()) return;
+    points += 500;
+    lastRefill = today();
+    store.set('hr_points', points);
+    store.set('hr_refill', lastRefill);
+    haptic.win();
+    renderBet();
+  };
+
+  $('go').onclick = startRace;
+  $('next').onclick = () => { haptic.tap(); newRace(); };
+  window.addEventListener('resize', () => { if (horses.length) resize(); });
+
+  // ---- 시작 ----
+  (async () => {
+    const [p, h, n, rf] = await Promise.all(['hr_points', 'hr_history', 'hr_race_no', 'hr_refill'].map(k => store.get(k)));
+    if (p !== null && p !== '' && !isNaN(Number(p))) points = Number(p);
+    try { history = JSON.parse(h) || []; } catch { history = []; }
+    raceNo = Number(n) || 1;
+    lastRefill = rf || '';
+    renderHistory();
+    newRace();
+  })();
+</script>
+</body>
+</html>

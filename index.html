@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>미니 게임 허브</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/@tonconnect/ui@2.0.9/dist/tonconnect-ui.min.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #0f1115);
+    --text: var(--tg-theme-text-color, #f2f3f5);
+    --hint: var(--tg-theme-hint-color, #8b8f98);
+    --card: var(--tg-theme-secondary-bg-color, #1a1d24);
+    --accent: var(--tg-theme-button-color, #2f80ed);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; min-height: 100vh;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 20px; margin: 0; }
+  .hello { color: var(--hint); font-size: 13px; margin-top: 2px; }
+  .wallet { font-size: 12px; color: var(--hint); margin: -8px 0 16px; min-height: 16px; word-break: break-all; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .game {
+    background: var(--card); border: 0; border-radius: 16px; padding: 18px 14px;
+    color: var(--text); text-align: left; cursor: pointer; font: inherit;
+    display: flex; flex-direction: column; gap: 6px; transition: transform .12s;
+  }
+  .game:active { transform: scale(.97); }
+  .game .icon { font-size: 34px; }
+  .game .name { font-weight: 700; font-size: 16px; }
+  .game .desc { font-size: 12px; color: var(--hint); }
+  .game[disabled] { opacity: .45; cursor: default; }
+  .badge { align-self: flex-start; font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--accent); color: var(--accent-text); }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>🎮 미니 게임 허브</h1>
+      <div class="hello" id="hello">게임을 골라 주세요</div>
+    </div>
+    <div id="ton-connect"></div>
+  </header>
+  <div class="wallet" id="wallet"></div>
+
+  <div class="grid" id="games"></div>
+
+<script>
+  const tg = window.Telegram?.WebApp;
+  tg?.ready();
+  tg?.expand();
+
+  const user = tg?.initDataUnsafe?.user;
+  if (user) document.getElementById('hello').textContent = `${user.first_name}님, 반가워요!`;
+
+  const GAMES = [
+    { id: 'minesweeper', icon: '💣', name: '지뢰찾기', desc: '지뢰를 피해 모든 칸을 열어라', ready: true },
+    { id: 'sudoku',      icon: '🔢', name: '스도쿠',   desc: '9×9 숫자 퍼즐',               ready: true },
+    { id: 'chess',       icon: '♟️', name: '체스',     desc: 'AI 또는 친구와 대국',          ready: true },
+    { id: 'pinball',     icon: '🪩', name: '핀볼',     desc: '플리퍼로 공을 살려라',         ready: true },
+    { id: 'horserace',   icon: '🏇', name: '경마',     desc: '우승마를 예측하라',            ready: true },
+  ];
+
+  const grid = document.getElementById('games');
+  for (const g of GAMES) {
+    const b = document.createElement('button');
+    b.className = 'game';
+    b.disabled = !g.ready;
+    b.innerHTML = `<span class="icon">${g.icon}</span><span class="name">${g.name}</span>
+      <span class="desc">${g.desc}</span>${g.ready ? '' : '<span class="badge">준비중</span>'}`;
+    b.onclick = () => {
+      tg?.HapticFeedback?.impactOccurred('light');
+      location.href = `games/${g.id}.html`;
+    };
+    grid.appendChild(b);
+  }
+
+  // TON Connect: manifest는 반드시 공개 HTTPS 주소에 올라가 있어야 지갑이 열린다
+  const tonConnectUI = new TON_CONNECT_UI.TonConnectUI({
+    manifestUrl: new URL('tonconnect-manifest.json', location.href).href,
+    buttonRootId: 'ton-connect',
+    actionsConfiguration: {
+      // 지갑 승인 후 돌아올 주소: 봇의 Main App 링크 (봇 username으로 교체)
+      twaReturnUrl: 'https://t.me/YOUR_BOT_USERNAME?startapp',
+    },
+  });
+
+  tonConnectUI.onStatusChange(wallet => {
+    const el = document.getElementById('wallet');
+    if (!wallet) { el.textContent = ''; return; }
+    const raw = wallet.account.address;
+    el.textContent = `연결된 지갑: ${raw.slice(0, 8)}…${raw.slice(-6)}`;
+  });
+</script>
+</body>
+</html>
